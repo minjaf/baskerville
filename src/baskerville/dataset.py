@@ -256,6 +256,7 @@ class SeqDataset:
         step=1,
         target_slice=None,
         dtype="float16",
+        generator=False,
     ):
         """Convert TFR inputs and/or outputs to numpy arrays."""
         with tf.name_scope("numpy"):
@@ -310,6 +311,54 @@ class SeqDataset:
         else:
             return targets
 
+    def get_export_dataset_generator(
+        self,
+        return_inputs=True,
+        return_outputs=True,
+        step=1,
+        target_slice=None,
+        dtype="float16",
+        generator=False,
+    ):
+        """Convert TFR inputs and/or outputs to numpy arrays."""
+        with tf.name_scope("numpy"):
+            # initialize dataset from TFRecords glob
+            tfr_files = natsorted(glob.glob(self.tfr_path))
+            if tfr_files:
+                # dataset = tf.data.Dataset.list_files(tf.constant(tfr_files), shuffle=False)
+                dataset = tf.data.Dataset.from_tensor_slices(tfr_files)
+            else:
+                print("Cannot order TFRecords %s" % self.tfr_path, file=sys.stderr)
+                dataset = tf.data.Dataset.list_files(self.tfr_path)
+
+            # read TF Records
+            dataset = dataset.flat_map(file_to_records)
+            dataset = dataset.map(self.generate_parser(raw=True))
+            dataset = dataset.batch(1)
+
+        # collect inputs and outputs
+        for seq_raw, targets_raw in dataset:
+            result = {}
+            # sequence
+            if return_inputs:
+                seq_1hot = seq_raw.numpy().reshape((self.seq_length, -1))
+                if self.seq_length_crop > 0:
+                    crop_len = (self.seq_length - self.seq_length_crop) // 2
+                    seq_1hot = seq_1hot[crop_len:-crop_len, :]
+                result[TFR_INPUT] = seq_1hot
+            
+            # targets
+            if return_outputs:
+                targets1 = targets_raw.numpy().astype(dtype)
+                targets1 = np.reshape(targets1, (self.target_length, -1))
+                if target_slice is not None:
+                    targets1 = targets1[:, target_slice]
+                if step > 1:
+                    step_i = np.arange(0, self.target_length, step)
+                    targets1 = targets1[step_i, :]
+                result[TFR_OUTPUT] = targets1
+            yield result
+        
 
 def make_strand_transform(targets_df, targets_strand_df):
     """Make a sparse matrix to sum strand pairs.
